@@ -12,8 +12,8 @@ from .report import MaliciousSymlinkRemoved
 
 logger = get_logger()
 
-FILE_PERMISSION_MASK = 0o644
-DIR_PERMISSION_MASK = 0o775
+FILE_PERMISSION_MASK = 0
+DIR_PERMISSION_MASK = 0
 
 
 def carve_chunk_to_file(carve_path: Path, file: File, chunk: Chunk):
