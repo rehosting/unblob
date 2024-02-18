@@ -89,7 +89,9 @@ class UBIFSHandler(StructHandler):
     """
     HEADER_STRUCT = "ubifs_sb_node_t"
 
-    EXTRACTOR = Command("ubireader_extract_files", "{inpath}", "-w", "-o", "{outdir}")
+    EXTRACTOR = Command(
+        "ubireader_extract_files", "{inpath}", "-k", "-w", "-o", "{outdir}"
+    )
 
     DOC = HandlerDoc(
         name="UBIFS",
