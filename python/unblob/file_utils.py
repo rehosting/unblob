@@ -580,37 +580,17 @@ class FileSystem:
         if link.is_safe:
             return link
 
-        self.record_problem(link.format_report("Potential path traversal through link"))
-        return None
-
-    def _path_to_root(self, from_dir: Path) -> Path:
-        # This version does not look at the existing symlinks, so while it looks cleaner it is also
-        # somewhat less precise:
-        #
-        # os.path.relpath(self.root, start=self.root / chop_root(from_dir))
-        #
-        # In contrast, the below version looks like a kludge, but using .resolve() actually
-        # calculates the correct path in more cases, even if it can still give a bad result due
-        # to ordering of symlink creation and resolve defaulting to non-strict checking.
-        # Calculation unfortunately might fall back to the potentially wrong string interpretation,
-        # which is the same as os.path.relpath, sharing the same failure case.
-        # Ultimately we can not easily catch all symlink based path traversals here, so there
-        # still remains work for `unblob.extractor.fix_symlink()`
-        #
-        absolute_from_dir = (self.root / chop_root(from_dir)).resolve()
-        ups = len(absolute_from_dir.parts) - len(self.root.parts)
-        return Path("/".join(["."] + [".."] * ups))
+        if link.dst.absolute_path.exists():
+            self.record_problem(link.format_report("File already exists."))
+            return None
+        return link
 
     def create_symlink(self, src: Path, dst: Path):
         """Create a symlink dst with the link/content/target src."""
         logger.debug("creating symlink", file_path=dst, link_target=src, _verbosity=3)
 
-        if src.is_absolute():
-            # convert absolute paths to dst relative paths
-            # these would point to the same path if self.root would be the real root "/"
-            # but they are relocatable
-            src = self._path_to_root(dst.parent) / chop_root(src)
-
+        # We allow absolute symlinks, but we'll still use the safe_link test
+        # to check if the symlink already exists (otherwise we'd get an error)
         safe_link = self._get_checked_link(src=dst.parent / src, dst=dst)
 
         if safe_link:

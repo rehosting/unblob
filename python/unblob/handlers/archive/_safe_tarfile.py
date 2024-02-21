@@ -5,7 +5,6 @@ from typing import Literal
 
 from structlog import get_logger
 
-from unblob.file_utils import is_safe_path
 from unblob.report import ExtractionProblem
 
 logger = get_logger()
@@ -118,7 +117,7 @@ class SafeTarFile:
                 self.record_problem(member, str(e), "Ignored.")
         self.fix_directories(extract_root)
 
-    def extract(self, tarinfo: tarfile.TarInfo, extract_root: Path):  # noqa: C901
+    def extract(self, tarinfo: tarfile.TarInfo, extract_root: Path):
         if not tarinfo.name:
             self.record_problem(
                 tarinfo,
@@ -142,64 +141,6 @@ class SafeTarFile:
                 "Skipped.",
             )
             return
-
-        # we do want to extract absolute paths, but they must be changed to prevent path traversal
-        if Path(tarinfo.name).is_absolute():
-            self.record_problem(
-                tarinfo,
-                "Absolute path.",
-                "Converted to extraction relative path.",
-            )
-            tarinfo.name = str(Path(tarinfo.name).relative_to("/"))
-
-        # prevent traversal attempts through file name
-        if not is_safe_path(basedir=extract_root, path=extract_root / tarinfo.name):
-            self.record_problem(
-                tarinfo,
-                "Traversal attempt.",
-                "Skipped.",
-            )
-            return
-
-        # prevent traversal attempts through links
-        if tarinfo.islnk() or tarinfo.issym():
-            if Path(tarinfo.linkname).is_absolute():
-
-                def calculate_linkname():
-                    root = extract_root.resolve()
-                    path = (extract_root / tarinfo.name).resolve()
-
-                    if path.parts[: len(root.parts)] != root.parts:
-                        return None
-
-                    depth = max(0, len(path.parts) - len(root.parts) - 1)
-                    return ("/".join([".."] * depth) or ".") + tarinfo.linkname
-
-                relative_linkname = calculate_linkname()
-                if relative_linkname is None:
-                    self.record_problem(
-                        tarinfo,
-                        "Absolute path conversion to extraction relative failed - would escape root.",
-                        "Skipped.",
-                    )
-                    return
-
-                assert not Path(relative_linkname).is_absolute()
-                self.record_problem(
-                    tarinfo,
-                    "Absolute path as link target.",
-                    "Converted to extraction relative path.",
-                )
-                tarinfo.linkname = relative_linkname
-
-            resolved_path = (extract_root / tarinfo.name).parent / tarinfo.linkname
-            if not is_safe_path(basedir=extract_root, path=resolved_path):
-                self.record_problem(
-                    tarinfo,
-                    "Traversal attempt through link path.",
-                    "Skipped.",
-                )
-                return
 
         target_path = extract_root / tarinfo.name
         # directories are special: we can not set their metadata now + they might also be already existing

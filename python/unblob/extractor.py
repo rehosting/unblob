@@ -6,9 +6,8 @@ from pathlib import Path
 
 from structlog import get_logger
 
-from .file_utils import carve, is_safe_path
+from .file_utils import carve
 from .models import Chunk, File, PaddingChunk, TaskResult, UnknownChunk, ValidChunk
-from .report import MaliciousSymlinkRemoved
 
 logger = get_logger()
 
@@ -39,60 +38,7 @@ def fix_permission(path: Path):
     path.chmod(mode)
 
 
-def is_recursive_link(path: Path) -> bool:
-    try:
-        path.resolve()
-    except RuntimeError:
-        return True
-    return False
-
-
-def fix_symlink(path: Path, outdir: Path, task_result: TaskResult) -> Path:
-    """Rewrites absolute symlinks to point within the extraction directory (outdir).
-
-    If it's not a relative symlink it is either removed it it attempts
-    to traverse outside of the extraction directory or rewritten to be
-    fully portable (no mention of the extraction directory in the link
-    value).
-    """
-    if is_recursive_link(path):
-        logger.error("Symlink loop identified, removing", path=path)
-        error_report = MaliciousSymlinkRemoved(
-            link=path.as_posix(), target=path.readlink().as_posix()
-        )
-        task_result.add_report(error_report)
-        path.unlink()
-        return path
-
-    raw_target = os.readlink(path)  # noqa: PTH115
-    if not raw_target:
-        logger.error("Symlink with empty target, removing.")
-        path.unlink()
-        return path
-
-    target = Path(raw_target)
-    if target.is_absolute():
-        target = Path(target.as_posix().lstrip("/"))
-    else:
-        target = path.resolve()
-
-    safe = is_safe_path(outdir, target)
-
-    if not safe:
-        logger.error("Path traversal attempt through symlink, removing", target=target)
-        error_report = MaliciousSymlinkRemoved(
-            link=path.as_posix(), target=target.as_posix()
-        )
-        task_result.add_report(error_report)
-        path.unlink()
-    else:
-        relative_target = os.path.relpath(outdir.joinpath(target), start=path.parent)
-        path.unlink()
-        path.symlink_to(relative_target)
-    return path
-
-
-def fix_extracted_directory(outdir: Path, task_result: TaskResult):
+def fix_extracted_directory(outdir: Path, task_result: TaskResult):  # noqa: ARG001
     def _fix_extracted_directory(directory: Path):
         if not directory.exists():
             return
@@ -100,7 +46,9 @@ def fix_extracted_directory(outdir: Path, task_result: TaskResult):
             try:
                 fix_permission(path)
                 if path.is_symlink():
-                    fix_symlink(path, outdir, task_result)
+                    # Unlike upstream unblob, we allow symlinks to do anything they want. We run in docker so this
+                    # isn't as dangerous as it would be otherwise, but it's still probably
+                    # a questionable decision.
                     continue
                 if path.is_dir():
                     _fix_extracted_directory(path)
