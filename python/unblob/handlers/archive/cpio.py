@@ -225,12 +225,14 @@ class CPIOParserBase:
                     self.file,
                     entry.start_offset,
                     entry.size,
-                    mode=entry.mode & 0o777,
+                    mode=entry.mode,
                 )
             elif stat.S_ISDIR(entry.mode):
                 fs.mkdir(
-                    entry.path, mode=entry.mode & 0o777, parents=True, exist_ok=True
+                    entry.path, mode=entry.mode, parents=True, exist_ok=True
                 )
+            elif stat.S_ISDIR(entry.mode):
+                fs.mkdir(entry.path, mode=entry.mode, parents=True, exist_ok=True)
             elif stat.S_ISLNK(entry.mode):
                 link_path = Path(
                     snull(
@@ -244,7 +246,7 @@ class CPIOParserBase:
                 or stat.S_ISSOCK(entry.mode)
                 or stat.S_ISSOCK(entry.mode)
             ):
-                fs.mknod(entry.path, mode=entry.mode & 0o777, device=entry.rdev)
+                fs.mknod(entry.path, mode=entry.mode, device=entry.rdev)
             else:
                 logger.warning("unknown file type in CPIO archive")
 
