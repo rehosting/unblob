@@ -494,9 +494,9 @@ class YAFFSParser:
 
             fs.mknod(out_path, entry.st_mode, entry.st_rdev)
         elif entry.object_type == YaffsObjectType.DIRECTORY:
-            fs.mkdir(out_path, exist_ok=True)
+            fs.mkdir(out_path, exist_ok=True, mode=entry.st_mode)
         elif entry.object_type == YaffsObjectType.FILE:
-            fs.write_chunks(out_path, self.get_file_chunks(entry))
+            fs.write_chunks(out_path, self.get_file_chunks(entry), mode=entry.st_mode)
         elif entry.object_type == YaffsObjectType.SYMLINK:
             fs.create_symlink(src=Path(entry.alias), dst=out_path)
         elif entry.object_type == YaffsObjectType.HARDLINK:
