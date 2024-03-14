@@ -23,7 +23,9 @@ logger = get_logger()
 
 
 class Command(Extractor):
-    def __init__(self, executable, *args, stdout: str | None = None):
+    def __init__(
+        self, executable, *args, stdout: str | None = None, make_outdir: bool = True
+    ):
         """Extract using external extractor and template parameters.
 
         Has extra support for extractors (notably 7z), which can not be directed to output to a file, but can extract to stdout:
@@ -32,8 +34,14 @@ class Command(Extractor):
         self._executable = executable
         self._command_template = [executable, *args]
         self._stdout = stdout
+        self.make_outdir = make_outdir
 
     def extract(self, inpath: Path, outdir: Path):
+        if not self.make_outdir and outdir.exists():
+            # If command doesn't want us to make the outdir, but it exists, we need to remove it
+            # This will only remove the directory if it's empty, otherwise we'll raise an exception
+            outdir.rmdir()
+
         cmd = self._make_extract_command(inpath, outdir)
         command = shlex.join(cmd)
         logger.debug("Running extract command", command=command)
