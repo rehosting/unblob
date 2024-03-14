@@ -46,7 +46,7 @@ class CramFSHandler(StructHandler):
     """
     HEADER_STRUCT = "cramfs_header_t"
 
-    EXTRACTOR = Command("7z", "x", "-y", "{inpath}", "-o{outdir}")
+    EXTRACTOR = Command("cramfsck", "-x", "{outdir}", "{inpath}", make_outdir=False)
 
     DOC = HandlerDoc(
         name="CramFS",
