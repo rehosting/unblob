@@ -220,7 +220,13 @@ class CPIOParserBase:
                 fs.unlink(entry.path)
 
             if stat.S_ISREG(entry.mode):
-                fs.carve(entry.path, self.file, entry.start_offset, entry.size)
+                fs.carve(
+                    entry.path,
+                    self.file,
+                    entry.start_offset,
+                    entry.size,
+                    mode=entry.mode & 0o777,
+                )
             elif stat.S_ISDIR(entry.mode):
                 fs.mkdir(
                     entry.path, mode=entry.mode & 0o777, parents=True, exist_ok=True

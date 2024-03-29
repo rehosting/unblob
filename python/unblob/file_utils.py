@@ -299,13 +299,17 @@ def iterate_file(
         yield data
 
 
-def carve(carve_path: Path, file: RandomReader, start_offset: int, size: int):
+def carve(
+    carve_path: Path, file: RandomReader, start_offset: int, size: int, mode: int = 0o644
+):
     """Extract part of a file."""
     carve_path.parent.mkdir(parents=True, exist_ok=True)
 
     with carve_path.open("xb") as f:
         for data in iterate_file(file, start_offset, size):
             f.write(data)
+
+    carve_path.chmod(mode)
 
 
 def stream_scan(scanner, file: File):
@@ -527,12 +531,14 @@ class FileSystem:
             for chunk in chunks:
                 f.write(chunk)
 
-    def carve(self, path: Path, file: File, start_offset: int, size: int):
+    def carve(
+        self, path: Path, file: File, start_offset: int, size: int, mode: int = 0o644
+    ):
         logger.debug("carving file", path=path, _verbosity=3)
         safe_path = self._get_extraction_path(path, "carve")
 
         self._ensure_parent_dir(safe_path)
-        carve(safe_path, file, start_offset, size)
+        carve(safe_path, file, start_offset, size, mode=mode)
 
     def mkdir(self, path: Path, *, mode=0o777, parents=False, exist_ok=False):
         logger.debug("creating directory", dir_path=path, _verbosity=3)
