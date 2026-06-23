@@ -5,6 +5,7 @@ from typing import Literal
 
 from structlog import get_logger
 
+from unblob.file_utils import is_safe_path
 from unblob.report import ExtractionProblem
 
 logger = get_logger()
@@ -141,6 +142,46 @@ class SafeTarFile:
                 "Skipped.",
             )
             return
+
+        # We do want to extract absolute paths, but the file *location* must be
+        # relocated under the extraction root to prevent it escaping (e.g. an
+        # entry named "/etc/passwd" must land in <root>/etc/passwd).
+        if Path(tarinfo.name).is_absolute():
+            self.record_problem(
+                tarinfo,
+                "Absolute path.",
+                "Converted to extraction relative path.",
+            )
+            tarinfo.name = str(Path(tarinfo.name).relative_to("/"))
+
+        # Prevent path traversal through the entry's own name ("../../x").
+        if not is_safe_path(basedir=extract_root, path=extract_root / tarinfo.name):
+            self.record_problem(
+                tarinfo,
+                "Traversal attempt.",
+                "Skipped.",
+            )
+            return
+
+        # Link target handling. The rehosting fork deliberately preserves
+        # *absolute* symlink targets verbatim (see "Allow absolute symlinks"):
+        # firmware relies on the exact target string and extraction only runs
+        # inside a container. *Relative* targets, however, are still contained:
+        # a "../../.." chain that resolves outside the extraction root is a
+        # traversal attempt (not what the absolute-symlink change was about) and
+        # is skipped, exactly as upstream does. Hard links are always contained,
+        # since a hard link outside the root would expose host files.
+        if (tarinfo.issym() or tarinfo.islnk()) and not Path(
+            tarinfo.linkname
+        ).is_absolute():
+            resolved_path = (extract_root / tarinfo.name).parent / tarinfo.linkname
+            if not is_safe_path(basedir=extract_root, path=resolved_path):
+                self.record_problem(
+                    tarinfo,
+                    "Traversal attempt through link path.",
+                    "Skipped.",
+                )
+                return
 
         target_path = extract_root / tarinfo.name
         # directories are special: we can not set their metadata now + they might also be already existing

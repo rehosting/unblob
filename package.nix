@@ -17,6 +17,7 @@
   sasquatch,
   sasquatch-v4be,
   simg2img,
+  cramfsprogs,
   ubi_reader,
   unar,
   upx,
@@ -39,6 +40,10 @@ let
     simg2img
     unar
     upx
+    # provides `cramfsck`, which the rehosting fork uses to extract cramfs
+    # (upstream uses 7z); without it cramfs extraction fails. Note this is the
+    # standalone cramfs userland, not util-linux's fsck.cramfs.
+    cramfsprogs
     zstd
     lz4
   ]
@@ -138,6 +143,28 @@ python3.pkgs.buildPythonApplication {
   pytestFlags = [
     "--timeout=600"
     "--with-e2e"
+  ];
+
+  # These integration cases cannot run in the Nix build sandbox; they are not
+  # rehosting-fork divergences but environment limitations (also disabled by
+  # nixpkgs' own unblob package). Real extraction behaviour for the fork is
+  # covered by fw2tar's in-Docker behaviour harness (fw2tar/tests/behavior).
+  disabledTests = [
+    # debugfs rdump exits non-zero on these images in the sandbox
+    # https://github.com/tytso/e2fsprogs/issues/152
+    "test_all_handlers[filesystem.extfs]"
+    # regression in erofs-utils >=1.9
+    "test_all_handlers[filesystem.android.erofs]"
+    # unblob's landlock sandbox denies hardlinks within the extract dir (EXDEV)
+    "test_all_handlers[filesystem.romfs]"
+    "test_all_handlers[filesystem.yaffs]"
+    # btrfs extraction renames across the /build tmpfs -> os.rename EXDEV in the
+    # sandbox (same cross-device limitation as romfs/yaffs).
+    "test_all_handlers[filesystem.btrfs_stream]"
+    # this sample carries setuid/setgid/sticky files; the fork's carve() chmods
+    # those bits to preserve permissions, which EPERMs as non-root in the nosuid
+    # build sandbox. In production unblob runs under fakeroot, where it succeeds.
+    "test_all_handlers[archive.cpio.cpio_portable_ascii]"
   ];
 
   versionCheckProgramArg = "--version";

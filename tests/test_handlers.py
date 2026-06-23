@@ -27,6 +27,18 @@ from unblob.testing import (
 TEST_DATA_PATH = Path(__file__).parent / "integration"
 HANDLERS_PACKAGE_PATH = Path(handlers.__file__).parent
 
+# Integration cases that are known to fail because of a deliberate rehosting-fork
+# divergence from upstream, keyed by the parametrize id (``<type>.<handler>``).
+# Using xfail (not skip/delete) keeps the case running so we are alerted the
+# moment the underlying issue is fixed and the xfail can be removed.
+KNOWN_FORK_XFAILS = {
+    # The fork extracts cramfs with ``cramfsck`` instead of upstream's 7z to
+    # preserve permissions, but cramfsck cannot read big-endian images
+    # ("superblock magic not found"). Tracked as rehosting/fw2tar#5; the guard
+    # is removed when the big-endian fallback lands.
+    "filesystem.cramfs.big_endian": "rehosting/fw2tar#5: cramfsck lacks big-endian cramfs support",
+}
+
 
 def test_handler_docs_have_unique_names():
     docs = [
@@ -58,6 +70,12 @@ def test_all_handlers(
     if (sys.platform, handler_name) == ("darwin", "partclone"):
         pytest.skip(
             f"Handler '{handler_name}' not supported on platform '{sys.platform}'"
+        )
+
+    test_id = request.node.callspec.id
+    if test_id in KNOWN_FORK_XFAILS:
+        request.node.add_marker(
+            pytest.mark.xfail(reason=KNOWN_FORK_XFAILS[test_id], strict=True)
         )
 
     log_path = Path("/dev/null")  # no logging

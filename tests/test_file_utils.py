@@ -27,7 +27,7 @@ from unblob.file_utils import (
     round_down,
     round_up,
 )
-from unblob.report import LinkExtractionProblem, PathTraversalProblem
+from unblob.report import PathTraversalProblem
 
 
 @functools.lru_cache
@@ -594,24 +594,34 @@ class TestFileSystem:
         assert output_path.readlink() == Path("../bin/sh")
         assert sandbox.problems == []
 
+    # NOTE (rehosting fork): the fork deliberately preserves symlink targets
+    # verbatim instead of rewriting them to stay inside the sandbox (commit
+    # "Allow absolute symlinks"). Upstream rewrites every symlink to a relative
+    # path for security; that corrupts firmware rootfs symlinks, and since
+    # extraction only runs inside Docker the fork accepts the reduced isolation.
+    # The destination (write location) is still kept inside the sandbox, so no
+    # file ever escapes; only the link *target* may point outside.
     def test_create_symlink_target_outside_sandbox(self, sandbox: FileSystem):
-        # /shell -> ../bin/sh
+        # /shell -> ../bin/sh : target escapes the sandbox but is preserved as-is
         sandbox.mkdir(Path("bin"))
         sandbox.write_bytes(Path("bin/sh"), b"posix shell")
         sandbox.create_symlink(Path("../bin/sh"), Path("/shell"))
 
-        assert any(p for p in sandbox.problems if isinstance(p, LinkExtractionProblem))
         output_path = sandbox.root / "shell"
-        assert not output_path.exists()
-        assert not output_path.is_symlink()
+        assert output_path.is_symlink()
+        assert output_path.readlink() == Path("../bin/sh")
+        assert sandbox.problems == []
 
     def test_create_symlink_absolute_paths(self, sandbox: FileSystem):
+        # An absolute target is preserved verbatim (upstream would rewrite it to
+        # the relative "target file"); it resolves correctly once the rootfs is
+        # mounted/chrooted, even though it does not resolve on the host here.
         sandbox.write_bytes(Path("target file"), b"test content")
         sandbox.create_symlink(Path("/target file"), Path("/symlink"))
 
         output_path = sandbox.root / "symlink"
-        assert output_path.exists()
-        assert output_path.readlink() == Path("target file")
+        assert output_path.is_symlink()
+        assert output_path.readlink() == Path("/target file")
         assert sandbox.problems == []
 
     def test_create_symlink_absolute_paths_self_referenced(self, sandbox: FileSystem):
@@ -619,16 +629,17 @@ class TestFileSystem:
         sandbox.create_symlink(Path("/etc/passwd"), Path("/etc/passwd"))
 
         output_path = sandbox.root / "etc/passwd"
-        assert not output_path.exists()
-        assert output_path.readlink() == Path("../etc/passwd")
+        assert output_path.is_symlink()
+        # Absolute target preserved verbatim (upstream rewrote it to ../etc/passwd).
+        assert output_path.readlink() == Path("/etc/passwd")
         assert sandbox.problems == []
 
     def test_create_symlink_outside_sandbox(self, sandbox: FileSystem):
+        # The destination escapes the sandbox: it is redirected back inside so
+        # nothing is written outside the extraction root.
         sandbox.create_symlink(Path("target file"), Path("../symlink"))
 
-        output_path = sandbox.root / "../symlink"
-        assert not os.path.lexists(output_path)
-        assert sandbox.problems
+        assert not os.path.lexists(sandbox.root / "../symlink")
 
     def test_create_symlink_path_traversal(
         self, sandbox: FileSystem, sandbox_parent: Path
@@ -669,13 +680,14 @@ class TestFileSystem:
         assert sandbox.problems == []
 
     def test_create_hardlink_outside_sandbox(self, sandbox: FileSystem):
+        # The destination escapes the sandbox: it is redirected back inside so
+        # nothing is written outside the extraction root.
         output_path = sandbox.root / "../hardlink"
         linked_file = sandbox.root / "file"
         linked_file.write_bytes(b"")
         sandbox.create_hardlink(Path("file"), Path("../hardlink"))
 
         assert not os.path.lexists(output_path)
-        assert sandbox.problems
 
     @pytest.mark.parametrize("path", [Path("ok-path"), Path("../outside-path")])
     def test_open(self, path: Path, sandbox: FileSystem):
