@@ -26,6 +26,7 @@ from unblob.report import (
     ChunkReport,
     ExtractCommandFailedReport,
     FileMagicReport,
+    MaliciousSymlinkRemoved,
     MultiFileReport,
     Report,
     StatReport,
@@ -112,3 +113,5 @@ UnblobTarInfo.devminor
 UnblobTarInfo._sparse_structs  # noqa: SLF001
 
 UCLDecompressor
+
+MaliciousSymlinkRemoved.target  # serialized report field

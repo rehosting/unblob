@@ -1,7 +1,6 @@
 """File extraction related functions."""
 
 import errno
-import os
 from pathlib import Path
 
 from structlog import get_logger
