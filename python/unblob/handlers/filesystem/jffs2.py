@@ -170,7 +170,7 @@ class JFFS2Extractor(Extractor):
     ) -> list[tuple[Path, int]]:
         """Collect (path, mode) for every directory inode under outdir."""
         dir_modes: list[tuple[Path, int]] = []
-        outdir_real = outdir.resolve()
+        outdir_real = str(outdir.resolve())
         for dirent in node_dict.values():
             mode = inode_modes.get(dirent.ino)
             if mode is None or not stat.S_ISDIR(mode):
@@ -181,7 +181,9 @@ class JFFS2Extractor(Extractor):
                 continue
 
             target = (outdir / rel).resolve()
-            if outdir_real != os.path.commonpath((outdir_real, target)):
+            # commonpath returns a str, so compare against the str form of
+            # outdir -- comparing a Path to a str is always unequal.
+            if outdir_real != os.path.commonpath((outdir_real, str(target))):
                 # Path traversal -- jefferson would have discarded it too.
                 continue
             dir_modes.append((target, stat.S_IMODE(mode)))
