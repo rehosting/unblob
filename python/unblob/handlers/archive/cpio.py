@@ -209,46 +209,61 @@ class CPIOParserBase:
             raise InvalidInputFormat("Invalid CPIO archive.")
 
     def dump_entries(self, fs: FileSystem):
+        # (directory, mode) pairs to re-apply once all entries exist.
+        # FileSystem.mkdir forces owner-rwx (so children can be created) and is
+        # subject to the process umask, so directory sticky/setgid/setuid and
+        # group/other write bits would otherwise be lost (e.g. 1777 -> 1755).
+        # Regular files already get an explicit chmod in carve()/write_chunks().
+        dir_modes: list[tuple[Path, int]] = []
+
         for entry in self.entries:
             # skip entries with "." as filename
             if entry.path.name in ("", "."):
                 continue
+            if self._dump_entry(fs, entry):
+                dir_modes.append((entry.path, entry.mode))
 
-            # There are cases where CPIO archives have duplicated entries
-            # We then unlink the files to overwrite them and avoid an error.
-            if not stat.S_ISDIR(entry.mode):
-                fs.unlink(entry.path)
+        # Re-apply directory modes deepest-first (so a parent losing owner-x
+        # never blocks resolving a child that still needs chmod-ing).
+        for path, mode in sorted(
+            dir_modes, key=lambda pm: len(pm[0].parts), reverse=True
+        ):
+            fs.chmod(path, mode)
 
-            if stat.S_ISREG(entry.mode):
-                fs.carve(
-                    entry.path,
-                    self.file,
-                    entry.start_offset,
-                    entry.size,
-                    mode=entry.mode,
-                )
-            elif stat.S_ISDIR(entry.mode):
-                fs.mkdir(
-                    entry.path, mode=entry.mode, parents=True, exist_ok=True
-                )
-            elif stat.S_ISDIR(entry.mode):
-                fs.mkdir(entry.path, mode=entry.mode, parents=True, exist_ok=True)
-            elif stat.S_ISLNK(entry.mode):
-                link_path = Path(
-                    snull(
-                        self.file[entry.start_offset : entry.start_offset + entry.size]
-                    ).decode("utf-8")
-                )
-                fs.create_symlink(src=link_path, dst=entry.path)
-            elif (
-                stat.S_ISCHR(entry.mode)
-                or stat.S_ISBLK(entry.mode)
-                or stat.S_ISSOCK(entry.mode)
-                or stat.S_ISSOCK(entry.mode)
-            ):
-                fs.mknod(entry.path, mode=entry.mode, device=entry.rdev)
-            else:
-                logger.warning("unknown file type in CPIO archive")
+    def _dump_entry(self, fs: FileSystem, entry: CPIOEntry) -> bool:
+        """Materialize one entry; return True if it is a directory (mode re-applied later)."""
+        # There are cases where CPIO archives have duplicated entries
+        # We then unlink the files to overwrite them and avoid an error.
+        if not stat.S_ISDIR(entry.mode):
+            fs.unlink(entry.path)
+
+        if stat.S_ISREG(entry.mode):
+            fs.carve(
+                entry.path,
+                self.file,
+                entry.start_offset,
+                entry.size,
+                mode=entry.mode,
+            )
+        elif stat.S_ISDIR(entry.mode):
+            fs.mkdir(entry.path, mode=entry.mode, parents=True, exist_ok=True)
+            return True
+        elif stat.S_ISLNK(entry.mode):
+            link_path = Path(
+                snull(
+                    self.file[entry.start_offset : entry.start_offset + entry.size]
+                ).decode("utf-8")
+            )
+            fs.create_symlink(src=link_path, dst=entry.path)
+        elif (
+            stat.S_ISCHR(entry.mode)
+            or stat.S_ISBLK(entry.mode)
+            or stat.S_ISSOCK(entry.mode)
+        ):
+            fs.mknod(entry.path, mode=entry.mode, device=entry.rdev)
+        else:
+            logger.warning("unknown file type in CPIO archive")
+        return False
 
     def _pad_file(self, end_offset: int) -> int:
         """CPIO archives can have a 512 bytes block padding at the end."""

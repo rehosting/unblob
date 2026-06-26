@@ -300,7 +300,11 @@ def iterate_file(
 
 
 def carve(
-    carve_path: Path, file: RandomReader, start_offset: int, size: int, mode: int = 0o644
+    carve_path: Path,
+    file: RandomReader,
+    start_offset: int,
+    size: int,
+    mode: int = 0o644,
 ):
     """Extract part of a file."""
     carve_path.parent.mkdir(parents=True, exist_ok=True)

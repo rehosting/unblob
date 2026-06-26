@@ -21,6 +21,14 @@ targets = [
 version = 2
 # Lint level for crates that have been yanked from their source registry
 yanked = "warn"
+# Advisories acknowledged but not actionable here. These are PyO3 soundness
+# advisories pulled in transitively; unblob does not exercise the affected APIs
+# (PyList/PyTuple nth iterators, PyCFunction::new_closure) from untrusted input,
+# and the fix requires a PyO3 major bump tracked separately upstream.
+ignore = [
+  "RUSTSEC-2026-0176",
+  "RUSTSEC-2026-0177",
+]
 
 # ---------------------------------------------------------------------------
 # Licenses
