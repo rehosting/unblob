@@ -1,11 +1,15 @@
 import binascii
 import io
+import os
+import stat
+from pathlib import Path
 
 from structlog import get_logger
 
 from unblob.file_utils import (
     Endian,
     InvalidInputFormat,
+    StructParser,
     convert_int16,
     read_until_past,
     round_up,
@@ -13,6 +17,8 @@ from unblob.file_utils import (
 
 from ...extractors import Command
 from ...models import (
+    Extractor,
+    ExtractResult,
     File,
     HandlerDoc,
     HandlerType,
@@ -43,6 +49,231 @@ XREF = JFFS2_FEATURE_INCOMPAT | JFFS2_NODE_ACCURATE | 9
 
 JFFS2_NODETYPES = {DIRENT, INODE, CLEANMARKER, PADDING, SUMMARY, XATTR, XREF}
 
+# JFFS2 root directory inode number (its dirent has no parent in the image).
+JFFS2_ROOT_INO = 1
+
+
+class JFFS2Extractor(Extractor):
+    """Extract JFFS2 with ``jefferson`` then restore directory permissions.
+
+    ``jefferson`` writes directories with ``os.makedirs`` and never chmods
+    them, so every directory comes out with the default ``0o777 & ~umask``
+    (typically ``0o755``) regardless of its real mode -- restrictive,
+    setgid, setuid and sticky directory bits are silently lost. File modes
+    are preserved because ``jefferson`` explicitly chmods regular files.
+
+    We re-parse the JFFS2 metadata after extraction to recover the real
+    directory modes and re-apply them deepest-first (so re-applying a
+    restrictive parent mode never blocks chmod-ing a child).
+    """
+
+    C_DEFINITIONS = r"""
+        typedef struct jffs2_raw_dirent {
+            uint16 magic;
+            uint16 nodetype;
+            uint32 totlen;
+            uint32 hdr_crc;
+            uint32 pino;
+            uint32 version;
+            uint32 ino;
+            uint32 mctime;
+            uint8 nsize;
+            uint8 type;
+            uint8 unused[2];
+            uint32 node_crc;
+            uint32 name_crc;
+        } jffs2_raw_dirent_t;
+
+        typedef struct jffs2_raw_inode {
+            uint16 magic;
+            uint16 nodetype;
+            uint32 totlen;
+            uint32 hdr_crc;
+            uint32 ino;
+            uint32 version;
+            uint32 mode;
+            uint16 uid;
+            uint16 gid;
+            uint32 isize;
+            uint32 atime;
+            uint32 mtime;
+            uint32 ctime;
+            uint32 offset;
+            uint32 csize;
+            uint32 dsize;
+            uint8 compr;
+            uint8 usercompr;
+            uint16 flags;
+            uint32 data_crc;
+            uint32 node_crc;
+        } jffs2_raw_inode_t;
+    """
+
+    DIRENT_HEADER_LEN = 40
+
+    def __init__(self):
+        self._command = Command("jefferson", "-v", "-f", "-d", "{outdir}", "{inpath}")
+        self._struct_parser = StructParser(self.C_DEFINITIONS)
+
+    def get_dependencies(self) -> list[str]:
+        return self._command.get_dependencies()
+
+    def extract(self, inpath: Path, outdir: Path) -> ExtractResult | None:
+        result = self._command.extract(inpath, outdir)
+        try:
+            self._restore_directory_modes(inpath, outdir)
+        except Exception:
+            # Mode restoration is best-effort: never fail an otherwise
+            # successful extraction because we could not re-parse metadata.
+            logger.warning(
+                "Failed to restore JFFS2 directory modes", exc_info=True, _verbosity=2
+            )
+        return result
+
+    def _restore_directory_modes(self, inpath: Path, outdir: Path):
+        content = inpath.read_bytes()
+        if len(content) < 2:
+            return
+
+        magic = convert_int16(content[:2], Endian.BIG)
+        endian = Endian.BIG if magic in (0x1985, 0x1984) else Endian.LITTLE
+
+        dirents, inode_modes = self._scan_metadata(content, endian)
+
+        # ino -> dirent (keep the highest version, like jefferson does).
+        node_dict: dict[int, object] = {}
+        for dirent in dirents:
+            existing = node_dict.get(dirent.ino)
+            if existing is None or dirent.version > existing.version:
+                node_dict[dirent.ino] = dirent
+
+        dir_modes = self._collect_dir_modes(node_dict, inode_modes, outdir)
+
+        # Re-apply deepest-first so re-applying a restrictive parent mode
+        # never blocks chmod-ing a child still beneath it.
+        for path, mode in sorted(
+            dir_modes, key=lambda pm: len(pm[0].parts), reverse=True
+        ):
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    os.chmod(path, mode)  # noqa: PTH101
+            except OSError as e:
+                logger.warning(
+                    "Could not chmod JFFS2 directory",
+                    path=str(path),
+                    error=str(e),
+                    _verbosity=2,
+                )
+
+    def _collect_dir_modes(
+        self, node_dict: dict, inode_modes: dict[int, int], outdir: Path
+    ) -> list[tuple[Path, int]]:
+        """Collect (path, mode) for every directory inode under outdir."""
+        dir_modes: list[tuple[Path, int]] = []
+        outdir_real = str(outdir.resolve())
+        for dirent in node_dict.values():
+            mode = inode_modes.get(dirent.ino)
+            if mode is None or not stat.S_ISDIR(mode):
+                continue
+
+            rel = self._reconstruct_path(dirent, node_dict)
+            if rel is None:
+                continue
+
+            target = (outdir / rel).resolve()
+            # commonpath returns a str, so compare against the str form of
+            # outdir -- comparing a Path to a str is always unequal.
+            if outdir_real != os.path.commonpath((outdir_real, str(target))):
+                # Path traversal -- jefferson would have discarded it too.
+                continue
+            dir_modes.append((target, stat.S_IMODE(mode)))
+        return dir_modes
+
+    def _scan_metadata(self, content: bytes, endian: Endian):
+        """Return (list of dirents, {ino: highest-version inode mode})."""
+        le_magics = (b"\x85\x19", b"\x84\x19")
+        be_magics = (b"\x19\x85", b"\x19\x84")
+        markers = le_magics if endian is Endian.LITTLE else be_magics
+
+        dirents = []
+        inode_modes: dict[int, int] = {}
+        inode_versions: dict[int, int] = {}
+
+        size = len(content)
+        pos = 0
+        while pos < size - 12:
+            if content[pos : pos + 2] not in markers:
+                pos += 1
+                continue
+
+            totlen = self._read_u32(content, pos + 4, endian)
+            nodetype = convert_int16(content[pos + 2 : pos + 4], endian)
+            if totlen < 12 or pos + totlen > size:
+                pos += 2
+                continue
+
+            node = content[pos : pos + totlen]
+            if nodetype == DIRENT and totlen >= self.DIRENT_HEADER_LEN:
+                dirent = self._parse_dirent(node, endian)
+                if dirent is not None:
+                    dirents.append(dirent)
+            elif nodetype == INODE:
+                self._parse_inode(node, endian, inode_modes, inode_versions)
+
+            pos += round_up(totlen, BLOCK_ALIGNMENT)
+
+        return dirents, inode_modes
+
+    def _parse_dirent(self, node: bytes, endian: Endian):
+        try:
+            dirent = self._struct_parser.parse("jffs2_raw_dirent_t", node, endian)
+            name = node[self.DIRENT_HEADER_LEN : self.DIRENT_HEADER_LEN + dirent.nsize]
+            dirent.name = name
+        except Exception:
+            logger.debug("Skipping unparsable JFFS2 dirent", _verbosity=3)
+            return None
+        return dirent if dirent.ino != 0 else None
+
+    def _parse_inode(
+        self,
+        node: bytes,
+        endian: Endian,
+        inode_modes: dict[int, int],
+        inode_versions: dict[int, int],
+    ):
+        try:
+            inode = self._struct_parser.parse("jffs2_raw_inode_t", node, endian)
+        except Exception:
+            logger.debug("Skipping unparsable JFFS2 inode", _verbosity=3)
+            return
+        if inode.ino not in inode_versions or inode.version > inode_versions[inode.ino]:
+            inode_versions[inode.ino] = inode.version
+            inode_modes[inode.ino] = inode.mode
+
+    @staticmethod
+    def _read_u32(content: bytes, offset: int, endian: Endian) -> int:
+        byteorder = "little" if endian is Endian.LITTLE else "big"
+        return int.from_bytes(content[offset : offset + 4], byteorder)
+
+    @staticmethod
+    def _reconstruct_path(dirent, node_dict: dict[int, object]) -> Path | None:
+        names = [dirent.name]
+        pino = dirent.pino
+        for _ in range(100):
+            if pino == JFFS2_ROOT_INO or pino not in node_dict:
+                break
+            parent = node_dict[pino]
+            names.append(parent.name)
+            pino = parent.pino
+        names.reverse()
+        try:
+            parts = [n.decode() for n in names]
+        except UnicodeDecodeError:
+            return None
+        if not all(parts):
+            return None
+        return Path(*parts)
+
 
 class _JFFS2Base(StructHandler):
     C_DEFINITIONS = r"""
@@ -59,7 +290,7 @@ class _JFFS2Base(StructHandler):
 
     BIG_ENDIAN_MAGIC = 0x19_85
 
-    EXTRACTOR = Command("jefferson", "-v", "-f", "-d", "{outdir}", "{inpath}")
+    EXTRACTOR = JFFS2Extractor()
 
     def guess_endian(self, file: File) -> Endian:
         magic = convert_int16(file.read(2), Endian.BIG)
