@@ -34,5 +34,57 @@ final: prev:
     };
   });
 
+  pythonPackagesExtensions = (prev.pythonPackagesExtensions or [ ]) ++ [
+    (python-final: python-prev: {
+      # The arpy on PyPI/nixpkgs (2.3.0, viraptor) crashes on ar archives that
+      # carry a GNU 64-bit symbol table (a `/SYM64/` member): it misclassifies
+      # the member as a long-name reference and evaluates `int(b"SYM64")`,
+      # raising ValueError. unblob's ar handler only catches ArchiveFormatError,
+      # so the exception aborts chunk calculation and the archive silently fails
+      # to extract (onekey-sec/unblob#767; reproduces on the TP-Link ER7206
+      # firmware). The unblob maintainer's fork (onekey-sec/arpy) carries the
+      # fix; point at it until a fixed arpy is published to PyPI/nixpkgs.
+      #
+      # The fork dropped setup.py for a PEP 621 pyproject (setuptools PEP 517
+      # default backend), so the build must move off the legacy setuptools
+      # phase that the nixpkgs 2.3.0 derivation uses.
+      arpy = python-prev.arpy.overridePythonAttrs (old: {
+        version = "2.3.0-unstable-2026-05-08";
+        src = final.fetchFromGitHub {
+          owner = "onekey-sec";
+          repo = "arpy";
+          rev = "f6746c566b92a193bfe57edb312809b6299ddab1";
+          hash = "sha256-t5LtuXRHLtJaMOCxa/crDVa8sdJjEXTmlIMBdwO3yHM=";
+        };
+        format = "pyproject";
+        nativeBuildInputs =
+          (old.nativeBuildInputs or [ ])
+          ++ (with python-final; [
+            setuptools
+            wheel
+          ]);
+        # The fork's pyproject declares no build backend and leaves the root a
+        # flat layout with a second top-level module (vulture_whitelist.py), so
+        # setuptools auto-discovery refuses to build. Pin the backend and the
+        # single shipped module explicitly.
+        postPatch = (old.postPatch or "") + ''
+          cat >> pyproject.toml <<'EOF'
+
+          [build-system]
+          requires = ["setuptools"]
+          build-backend = "setuptools.build_meta"
+
+          [tool.setuptools]
+          py-modules = ["arpy"]
+          EOF
+        '';
+        # arpy's own test suite (pytest + 90% coverage gate, fixtures under
+        # test/) is not the contract we depend on; unblob's ar integration
+        # fixtures exercise the behaviour we care about.
+        doCheck = false;
+      });
+    })
+  ];
+
   unblob = final.callPackage ./package.nix { };
 }
