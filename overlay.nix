@@ -47,7 +47,10 @@ final: prev:
       #
       # The fork dropped setup.py for a PEP 621 pyproject (setuptools PEP 517
       # default backend), so the build must move off the legacy setuptools
-      # phase that the nixpkgs 2.3.0 derivation uses.
+      # phase. Older nixpkgs package arpy with `format = "setuptools"`, newer
+      # ones with `pyproject = true`; force pyproject and clear format so the
+      # override builds under both (a consumer on a newer nixpkgs, e.g. fw2tar,
+      # otherwise trips the `pyproject != null -> format == null` assertion).
       arpy = python-prev.arpy.overridePythonAttrs (old: {
         version = "2.3.0-unstable-2026-05-08";
         src = final.fetchFromGitHub {
@@ -56,7 +59,8 @@ final: prev:
           rev = "f6746c566b92a193bfe57edb312809b6299ddab1";
           hash = "sha256-t5LtuXRHLtJaMOCxa/crDVa8sdJjEXTmlIMBdwO3yHM=";
         };
-        format = "pyproject";
+        pyproject = true;
+        format = null;
         nativeBuildInputs =
           (old.nativeBuildInputs or [ ])
           ++ (with python-final; [
