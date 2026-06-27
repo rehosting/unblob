@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 
 [[package]]
@@ -23,8 +23,7 @@ wheels = [
 [[package]]
 name = "arpy"
 version = "2.3.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d1/d5/a1985a4a645a1d66825e4cbb9fa7e8c5d10bf5b41fd32badb38b6b5e55ea/arpy-2.3.0.tar.gz", hash = "sha256:8302829a991cfcef2630b61e00f315db73164021cecbd7fb1fc18525f83f339c", size = 9572, upload-time = "2022-06-11T05:07:00.319Z" }
+source = { git = "https://github.com/onekey-sec/arpy?rev=f6746c566b92a193bfe57edb312809b6299ddab1#f6746c566b92a193bfe57edb312809b6299ddab1" }
 
 [[package]]
 name = "atheris"
@@ -2103,7 +2102,7 @@ type = [
 
 [package.metadata]
 requires-dist = [
-    { name = "arpy", specifier = ">=2.3.0" },
+    { name = "arpy", git = "https://github.com/onekey-sec/arpy?rev=f6746c566b92a193bfe57edb312809b6299ddab1" },
     { name = "attrs", specifier = ">=23.1.0" },
     { name = "click", specifier = ">=8.1.7" },
     { name = "cryptography", specifier = ">=41.0" },

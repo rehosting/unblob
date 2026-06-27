@@ -220,6 +220,10 @@ features = [
 
 [tool.uv.sources]
 taplo = { git = "https://github.com/tamasfe/taplo", tag = "0.10.0" }
+# PyPI arpy 2.3.0 crashes on GNU 64-bit symbol tables (/SYM64/), see
+# onekey-sec/unblob#767. Use the unblob maintainer's fork, which has the fix,
+# until it is published to PyPI. Keep the rev in sync with overlay.nix.
+arpy = { git = "https://github.com/onekey-sec/arpy", rev = "f6746c566b92a193bfe57edb312809b6299ddab1" }
 
 [build-system]
 build-backend = "maturin"
