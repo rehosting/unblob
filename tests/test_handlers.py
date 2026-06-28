@@ -31,13 +31,10 @@ HANDLERS_PACKAGE_PATH = Path(handlers.__file__).parent
 # divergence from upstream, keyed by the parametrize id (``<type>.<handler>``).
 # Using xfail (not skip/delete) keeps the case running so we are alerted the
 # moment the underlying issue is fixed and the xfail can be removed.
-KNOWN_FORK_XFAILS = {
-    # The fork extracts cramfs with ``cramfsck`` instead of upstream's 7z to
-    # preserve permissions, but cramfsck cannot read big-endian images
-    # ("superblock magic not found"). Tracked as rehosting/fw2tar#5; the guard
-    # is removed when the big-endian fallback lands.
-    "filesystem.cramfs.big_endian": "rehosting/fw2tar#5: cramfsck lacks big-endian cramfs support",
-}
+# Tests that pass upstream but are expected to fail in this fork (strict xfail).
+# Empty: the big-endian cramfs case (rehosting/fw2tar#5) now extracts via the
+# 7z endianness fallback in CramFSExtractor.
+KNOWN_FORK_XFAILS: dict[str, str] = {}
 
 
 def test_handler_docs_have_unique_names():
