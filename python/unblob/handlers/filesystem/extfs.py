@@ -1,3 +1,5 @@
+import re
+import subprocess
 from pathlib import Path
 
 from structlog import get_logger
@@ -5,6 +7,7 @@ from structlog import get_logger
 from unblob.file_utils import InvalidInputFormat
 
 from ...extractors import Command
+from ...extractors.command import COMMAND_TIMEOUT
 from ...models import (
     File,
     HandlerDoc,
@@ -20,6 +23,17 @@ logger = get_logger()
 
 EXT_BLOCK_SIZE = 0x400
 MAGIC_OFFSET = 0x438
+
+# Permission bits (setuid/setgid/sticky + rwx) — the part of st_mode `debugfs
+# stat` prints and that we want to mirror from the source inodes.
+PERMISSION_BITS = 0o7777
+
+# Header line of a `debugfs stat` block, e.g.
+#   Inode: 13   Type: regular    Mode:  04755   Flags: 0x80000
+# debugfs prints only the permission bits (no file-type bits) in octal. When
+# commands are fed on stdin debugfs prefixes the line with its `debugfs:  `
+# prompt, so the pattern is not anchored to the start of the line.
+DEBUGFS_MODE_RE = re.compile(rb"Inode:\s*\d+\s+Type:.*?Mode:\s*0?([0-7]+)")
 
 OS_LIST = [
     (0x0, "Linux"),
@@ -50,6 +64,68 @@ class ExtFSExtractor(Command):
     def _make_extract_command(self, inpath: Path, outdir: Path):
         escaped_outdir = Path(str(outdir).replace('"', '""'))
         return super()._make_extract_command(inpath, escaped_outdir)
+
+    def extract(self, inpath: Path, outdir: Path):
+        result = super().extract(inpath, outdir)
+        # ``debugfs rdump`` preserves the low rwx bits but drops setuid/setgid/
+        # sticky (e.g. busybox 04755 -> 0755), so an extracted rootfs silently
+        # loses those modes. Re-read each inode's mode straight from the image
+        # and re-apply it. Best-effort: extraction already succeeded, so never
+        # let a restore problem fail the whole extraction.
+        try:
+            self._restore_source_modes(inpath, outdir)
+        except Exception:
+            logger.warning(
+                "Failed to restore ext source permission bits", exc_info=True
+            )
+        return result
+
+    @staticmethod
+    def _restore_source_modes(inpath: Path, outdir: Path):
+        entries = [
+            path
+            for path in outdir.rglob("*")
+            if not path.is_symlink() and (path.is_file() or path.is_dir())
+        ]
+        if not entries:
+            return
+
+        # Re-apply deepest-first so restoring a restrictive directory mode (one
+        # without owner-execute) never blocks chmod-ing the entries beneath it.
+        entries.sort(key=lambda path: len(path.parts), reverse=True)
+
+        def source_path(path: Path) -> str:
+            # rdump extracts the image root into outdir, so the in-image path is
+            # the extracted path relative to outdir. debugfs re-tokenises -R/-f
+            # requests, where an embedded `"` must be doubled.
+            rel = path.relative_to(outdir).as_posix()
+            return "/" + rel.replace('"', '""')
+
+        # Feed the stat requests on stdin rather than via ``-f scriptfile``:
+        # extraction runs inside unblob's sandbox, which would deny a scratch
+        # file written outside the extraction tree.
+        request = "".join(f'stat "{source_path(p)}"\n' for p in entries) + "quit\n"
+        proc = subprocess.run(
+            ["debugfs", str(inpath)],
+            input=request.encode(),
+            capture_output=True,
+            timeout=COMMAND_TIMEOUT,
+            check=False,
+        )
+
+        modes = DEBUGFS_MODE_RE.findall(proc.stdout)
+        if len(modes) != len(entries):
+            # A stat that failed to resolve would shift the 1:1 pairing; rather
+            # than risk applying the wrong mode, leave rdump's result in place.
+            logger.warning(
+                "ext mode restore skipped: debugfs stat count mismatch",
+                extracted=len(entries),
+                statted=len(modes),
+            )
+            return
+
+        for path, mode in zip(entries, modes, strict=True):
+            path.chmod(int(mode, 8) & PERMISSION_BITS)
 
 
 class EXTHandler(StructHandler):
